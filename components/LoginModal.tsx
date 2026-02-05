@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Modal, View, TextInput, StyleSheet, ActivityIndicator, Alert } from "react-native";
+import { Modal, View, TextInput, StyleSheet, ActivityIndicator, Alert, Keyboard, InteractionManager } from "react-native";
 import { usePathname } from "expo-router";
 import Toast from "react-native-toast-message";
 import useAuthStore from "@/stores/authStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import useHomeStore from "@/stores/homeStore";
 import { api } from "@/services/api";
+import { LoginCredentialsManager } from "@/services/storage";
 import { ThemedView } from "./ThemedView";
 import { ThemedText } from "./ThemedText";
 import { StyledButton } from "./StyledButton";
@@ -22,9 +23,38 @@ const LoginModal = () => {
   const pathname = usePathname();
   const isSettingsPage = pathname.includes("settings");
 
-  // Focus management with better TV remote handling
+  const [isModalReady, setIsModalReady] = useState(false);
+
+  // Load saved credentials when modal opens
   useEffect(() => {
     if (isLoginModalVisible && !isSettingsPage) {
+            // 先确保键盘状态清理
+      Keyboard.dismiss();
+
+      const loadCredentials = async () => {
+        const savedCredentials = await LoginCredentialsManager.get();
+        if (savedCredentials) {
+          setUsername(savedCredentials.username);
+          setPassword(savedCredentials.password);
+        }
+      };
+      loadCredentials();
+
+      // 延迟设置 Modal 就绪状态
+      const readyTimeout = setTimeout(() => {
+        setIsModalReady(true);
+      }, 300);
+
+      return () => {
+        clearTimeout(readyTimeout);
+        setIsModalReady(false);
+      };
+    }
+  }, [isLoginModalVisible, isSettingsPage]);
+
+  // Focus management with better TV remote handling
+  useEffect(() => {
+    if (isModalReady && isLoginModalVisible && !isSettingsPage) {
       const isUsernameVisible = serverConfig?.StorageType !== "localstorage";
 
       // Use a small delay to ensure the modal is fully rendered
@@ -34,11 +64,19 @@ const LoginModal = () => {
         } else {
           passwordInputRef.current?.focus();
         }
-      }, 100);
+      }, 300);
 
       return () => clearTimeout(focusTimeout);
     }
-  }, [isLoginModalVisible, serverConfig, isSettingsPage]);
+  }, [isModalReady, isLoginModalVisible, serverConfig, isSettingsPage]);
+
+  // 清理 effect - 确保 Modal 关闭时清理所有状态
+  useEffect(() => {
+    return () => {
+      Keyboard.dismiss();
+      setIsModalReady(false);
+    };
+  }, []);
 
   const handleLogin = async () => {
     const isLocalStorage = serverConfig?.StorageType === "localstorage";
@@ -51,17 +89,38 @@ const LoginModal = () => {
       await api.login(isLocalStorage ? undefined : username, password);
       await checkLoginStatus(apiBaseUrl);
       await refreshPlayRecords();
-      Toast.show({ type: "success", text1: "登录成功" });
-      hideLoginModal();
-      setUsername("");
-      setPassword("");
 
-      // Show disclaimer alert after successful login
-      Alert.alert(
-        "免责声明",
-        "本应用仅提供影视信息搜索服务，所有内容均来自第三方网站。本站不存储任何视频资源，不对任何内容的准确性、合法性、完整性负责。",
-        [{ text: "确定" }]
-      );
+      // Save credentials on successful login
+      await LoginCredentialsManager.save({ username, password });
+
+      Toast.show({ type: "success", text1: "登录成功" });
+      // hideLoginModal();
+
+      // // Show disclaimer alert after successful login
+      // Alert.alert(
+      //   "免责声明",
+      //   "本应用仅提供影视信息搜索服务，所有内容均来自第三方网站。本站不存储任何视频资源，不对任何内容的准确性、合法性、完整性负责。",
+      //   [{ text: "确定" }]
+      // );
+
+            // 在登录成功后清理状态，再显示 Alert
+      const hideAndAlert = () => {
+        hideLoginModal();
+        setIsModalReady(false);
+        Keyboard.dismiss();
+
+        setTimeout(() => {
+          Alert.alert(
+            "免责声明",
+            "本应用仅提供影视信息搜索服务，所有内容均来自第三方网站。本站不存储任何视频资源，不对任何内容的准确性、合法性、完整性负责。",
+            [{ text: "确定" }]
+          );
+        }, 100);
+      };
+
+      // 使用 InteractionManager 确保 UI 稳定后再执行
+      InteractionManager.runAfterInteractions(hideAndAlert);
+
     } catch (error) {
       Toast.show({
         type: "error",
